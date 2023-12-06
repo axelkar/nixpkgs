@@ -1888,6 +1888,12 @@
     githubId = 206242;
     name = "Andreas Wiese";
   };
+  axelkar = {
+    name = "Axel Karjalainen";
+    email = "axel@axka.fi";
+    github = "axelkar";
+    githubId = 120189068;
+  };
   ayazhafiz = {
     email = "ayaz.hafiz.1@gmail.com";
     github = "hafiz";
