@@ -1,0 +1,695 @@
+From b7efa96733c97eb3686a598b22b284d1d8b6e3d6 Mon Sep 17 00:00:00 2001
+From: Axel Karjalainen <axel@axka.fi>
+Date: Wed, 6 Dec 2023 00:35:48 +0200
+Subject: [PATCH] Split up embedded and mutable data even more
+
+Crafty currently does the separation of mutable data, embedded data and code very poorly
+---
+ .gitignore                                    |  2 +-
+ app/classes/minecraft/mc_ping.py              |  1 -
+ app/classes/shared/helpers.py                 | 91 ++++++++++++++-----
+ app/classes/shared/main_controller.py         | 15 ++-
+ app/classes/shared/tasks.py                   | 14 ++-
+ app/classes/web/panel_handler.py              | 37 +++-----
+ .../web/routes/api/crafty/config/index.py     | 34 ++-----
+ .../web/routes/api/crafty/imports/index.py    |  2 +-
+ app/classes/web/tornado_handler.py            |  2 +
+ app/classes/web/upload_handler.py             |  7 +-
+ .../templates/panel/custom_login.html         |  4 +-
+ app/frontend/templates/panel/denied.html      |  4 +-
+ app/frontend/templates/public/404.html        |  4 +-
+ app/frontend/templates/public/error.html      |  4 +-
+ app/frontend/templates/public/login.html      |  6 +-
+ app/frontend/templates/public/offline.html    |  4 +-
+ app/frontend/templates/public/status.html     |  4 +-
+ main.py                                       | 25 +----
+ 18 files changed, 128 insertions(+), 132 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 132a2a2..8f8b783 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -21,7 +21,7 @@ venv.bak/
+ /import/
+ /imports/
+ /servers/
+-/app/frontend/static/assets/images/auth/custom/
++/auth_imgs/
+ /backups/
+ /temp/
+ /docker/servers/
+diff --git a/app/classes/minecraft/mc_ping.py b/app/classes/minecraft/mc_ping.py
+index 9d67a94..bdd61b1 100644
+--- a/app/classes/minecraft/mc_ping.py
++++ b/app/classes/minecraft/mc_ping.py
+@@ -99,7 +99,6 @@ class Player:
+ 
+ 
+ def get_code_format(format_name):
+-    root_dir = os.path.abspath(os.path.curdir)
+     format_file = os.path.join(os.path.dirname(__file__), "..", "..", "config", "motd_format.json")
+     try:
+         with open(format_file, "r", encoding="utf-8") as f:
+diff --git a/app/classes/shared/helpers.py b/app/classes/shared/helpers.py
+index a8f5f0b..f746a6e 100644
+--- a/app/classes/shared/helpers.py
++++ b/app/classes/shared/helpers.py
+@@ -57,24 +57,37 @@ class Helpers:
+     allowed_quotes = ['"', "'", "`"]
+ 
+     def __init__(self):
+-        self.root_dir = os.path.abspath(os.path.curdir)
+-        self.config_dir = os.path.join(self.root_dir, "app", "config")
+-        self.webroot = pathlib.Path(__file__).parent.parent.parent / "frontend"
+-        self.servers_dir = os.path.join(self.root_dir, "servers")
+-        self.backup_path = os.path.join(self.root_dir, "backups")
+-        self.migration_dir = pathlib.Path(__file__).parent.parent.parent / "migrations"
++        if getattr(sys, "frozen", False):
++            root_dir = pathlib.Path(sys.executable).parent
++            running_mode = "Frozen/executable"
++        else:
++            try:
++                root_dir = pathlib.Path(__file__).parent.parent.parent.parent
++                running_mode = "Non-interactive (e.g. 'python main.py')"
++            except NameError:
++                root_dir = pathlib.Path(os.getcwd())
++                running_mode = "Interactive"
++
++        Console.debug(f"Execution Mode: {running_mode}")
++        Console.debug(f"Application path  : '{root_dir}'")
++        self.root_dir = root_dir
++
++        self.mutable_dir = pathlib.Path(os.path.curdir)
++        self.config_dir = self.mutable_dir / "app" / "config"
++        self.webroot = self.root_dir / "app/frontend"
++        self.servers_dir = self.mutable_dir / "servers"
++        self.backup_path = self.mutable_dir / "backups"
++        self.migration_dir = self.root_dir / "app/migrations"
+         self.dir_migration = False
+ 
+-        self.session_file = os.path.join(self.root_dir, "app", "config", "session.lock")
+-        self.settings_file = os.path.join(self.root_dir, "app", "config", "config.json")
++        self.session_file = self.config_dir / "session.lock"
++        self.settings_file = self.config_dir / "config.json"
+ 
+-        self.ensure_dir_exists(os.path.join(self.root_dir, "app", "config", "db"))
+-        self.db_path = os.path.join(
+-            self.root_dir, "app", "config", "db", "crafty.sqlite"
+-        )
+-        self.writable_serverjar_cache = os.path.join(self.config_dir, "serverjars.json")
+-        self.embedded_serverjar_cache = pathlib.Path(__file__).parent.parent.parent / "config" / "serverjars.json"
+-        self.credits_cache = pathlib.Path(__file__).parent.parent.parent / "config" / "credits.json"
++        self.ensure_dir_exists(self.config_dir / "db")
++        self.db_path = self.config_dir / "db/crafty.sqlite"
++        self.writable_serverjar_cache = self.config_dir / "serverjars.json"
++        self.embedded_serverjar_cache = self.root_dir / "app/config/serverjars.json"
++        self.credits_cache = self.root_dir / "app/config/credits.json"
+         self.passhasher = PasswordHasher()
+         self.exiting = False
+ 
+@@ -82,6 +95,8 @@ class Helpers:
+         self.update_available = False
+         self.ignored_names = ["crafty_managed.txt", "db_stats"]
+ 
++        self.auth_img_dir.mkdir(parents=True, exist_ok=True)
++
+     @staticmethod
+     def auto_installer_fix(ex):
+         logger.critical(f"Import Error: Unable to load {ex.name} module", exc_info=True)
+@@ -569,7 +584,7 @@ class Helpers:
+         version_data = {}
+         try:
+             with open(
+-                pathlib.Path(__file__).parent.parent.parent / "config" / "version.json", "r", encoding="utf-8"
++                self.root_dir / "app/config/version.json", "r", encoding="utf-8"
+             ) as f:
+                 version_data = json.load(f)
+ 
+@@ -718,22 +733,21 @@ class Helpers:
+         return os.geteuid() == 0
+ 
+     def ensure_logging_setup(self):
+-        log_file = os.path.join(os.path.curdir, "logs", "commander.log")
+-        session_log_file = os.path.join(os.path.curdir, "logs", "session.log")
++        log_file = self.logs_dir / "commander.log"
++        session_log_file = self.logs_dir / "session.log"
+ 
+         logger.info("Checking app directory writable")
+ 
+-        writeable = Helpers.check_writeable(self.root_dir)
++        writeable = Helpers.check_writeable(self.mutable_dir)
+ 
+         # if not writeable, let's bomb out
+         if not writeable:
+-            logger.critical(f"Unable to write to {self.root_dir} directory!")
++            logger.critical(f"Unable to write to {self.mutable_dir} directory!")
+             sys.exit(1)
+ 
+         # ensure the log directory is there
+         try:
+-            with suppress(FileExistsError):
+-                os.makedirs(os.path.join(self.root_dir, "logs"))
++            self.logs_dir.mkdir(parents=True, exist_ok=True)
+         except Exception as e:
+             Console.error(f"Failed to make logs directory with error: {e} ")
+ 
+@@ -1076,7 +1090,7 @@ class Helpers:
+         return os.path.normpath(path)
+ 
+     def find_default_password(self):
+-        default_file = os.path.join(self.root_dir, "default.json")
++        default_file = self.root_dir / "default.json"
+         data = {}
+ 
+         if Helpers.check_file_exists(default_file):
+@@ -1199,3 +1213,34 @@ class Helpers:
+                 return base64.b64encode(skin_response.content)
+         else:
+             return
++
++    ####################################
++    ###          FILE PATHS          ###
++    ####################################
++
++    @property
++    def temp_dir(self):
++        return self.mutable_dir / "temp"
++
++    @property
++    def default_master_server_dir(self):
++        return self.mutable_dir / "servers"
++
++    @property
++    def logs_dir(self):
++        return self.mutable_dir / "logs"
++
++    @property
++    def import_dir(self):
++        return self.mutable_dir / "import"
++    @property
++    def import_upload_dir(self):
++        return self.mutable_dir / "import/upload"
++
++    @property
++    def auth_img_dir(self):
++        return self.mutable_dir / "auth_imgs"
++    @property
++    def default_auth_img_dir(self):
++        return self.webroot / "static/assets/images/auth"
++
+diff --git a/app/classes/shared/main_controller.py b/app/classes/shared/main_controller.py
+index 2358669..0a3833a 100644
+--- a/app/classes/shared/main_controller.py
++++ b/app/classes/shared/main_controller.py
+@@ -83,9 +83,6 @@ class Controller:
+     def check_system_user():
+         return HelperUsers.get_user_id_by_name("system") is not None
+ 
+-    def set_project_root(self, root_dir):
+-        self.project_root = root_dir
+-
+     def set_config_json(self, data):
+         current_config = self.helper.get_all_settings()
+         for key in current_config:
+@@ -108,7 +105,7 @@ class Controller:
+                     f"Found previous support log request at {exec_user['support_logs']}"
+                 )
+                 if self.helper.validate_traversal(
+-                    os.path.join(self.project_root, "temp"), exec_user["support_logs"]
++                    self.helper.temp_dir, exec_user["support_logs"]
+                 ):
+                     logger.debug("No transversal detected. Going for the delete.")
+                     self.del_support_file(exec_user["support_logs"])
+@@ -118,17 +115,17 @@ class Controller:
+             exec_user["user_id"], "notification", "Preparing your support logs"
+         )
+         self.helper.ensure_dir_exists(
+-            os.path.join(self.project_root, "temp", str(exec_user["user_id"]))
++            os.path.join(self.helper.temp_dir, str(exec_user["user_id"]))
+         )
+         temp_dir = os.path.join(
+-            self.project_root, "temp", str(exec_user["user_id"]), "support_logs"
++            self.helper.temp_dir, str(exec_user["user_id"]), "support_logs"
+         )
+ 
+         self.helper.ensure_dir_exists(
+-            os.path.join(self.project_root, "temp", str(exec_user["user_id"]), "zip")
++            os.path.join(self.helper.temp_dir, str(exec_user["user_id"]), "zip")
+         )
+         temp_zip_storage = os.path.join(
+-            self.project_root, "temp", str(exec_user["user_id"]), "zip"
++            self.helper.temp_dir, str(exec_user["user_id"]), "zip"
+         )
+         os.mkdir(temp_dir)
+         temp_zip_storage = os.path.join(temp_zip_storage, "support_logs")
+@@ -186,7 +183,7 @@ class Controller:
+                 logger.warning(f"Failed to copy file with error: {e}")
+         # Copy crafty logs to archive dir
+         full_log_name = os.path.join(crafty_path, "logs")
+-        FileHelpers.copy_dir(os.path.join(self.project_root, "logs"), full_log_name)
++        FileHelpers.copy_dir(self.helper.logs_dir, full_log_name)
+         self.support_scheduler.add_job(
+             self.log_status,
+             "interval",
+diff --git a/app/classes/shared/tasks.py b/app/classes/shared/tasks.py
+index 0402c58..d182f02 100644
+--- a/app/classes/shared/tasks.py
++++ b/app/classes/shared/tasks.py
+@@ -147,8 +147,7 @@ class TasksManager:
+         except:
+             logger.info("Caught error during shutdown", exc_info=True)
+         try:
+-            temp_dir = os.path.join(self.controller.project_root, "temp")
+-            FileHelpers.del_dirs(temp_dir)
++            FileHelpers.del_dirs(self.helper.temp_dir)
+         except:
+             logger.info(
+                 "Caught error during shutdown - "
+@@ -767,13 +766,13 @@ class TasksManager:
+                 )
+         # Search for old files in imports
+         self.helper.ensure_dir_exists(
+-            os.path.join(self.controller.project_root, "import", "upload")
++            self.helper.import_upload_dir
+         )
+         for file in os.listdir(
+-            os.path.join(self.controller.project_root, "import", "upload")
++            self.helper.import_upload_dir
+         ):
+             if self.helper.is_file_older_than_x_days(
+-                os.path.join(self.controller.project_root, "import", "upload", file)
++                self.helper.import_upload_dir / file
+             ):
+                 try:
+                     os.remove(os.path.join(file))
+@@ -794,7 +793,6 @@ class TasksManager:
+         self.controller.servers.check_for_old_logs()
+         try:
+             # check for crafty logs now
+-            logs_path = os.path.join(self.controller.project_root, "logs")
+             logs_delete_after = int(
+                 self.helper.get_setting("crafty_logs_delete_after_days")
+             )
+@@ -810,11 +808,11 @@ class TasksManager:
+                 log_files = list(
+                     filter(
+                         lambda val: val not in latest_log_files,
+-                        os.listdir(logs_path),
++                        os.listdir(self.helper.logs_dir),
+                     )
+                 )
+                 for log_file in log_files:
+-                    log_file_path = os.path.join(logs_path, log_file)
++                    log_file_path = os.path.join(self.helper.logs_dir, log_file)
+                     if Helpers.check_file_exists(
+                         log_file_path
+                     ) and Helpers.is_file_older_than_x_days(
+diff --git a/app/classes/web/panel_handler.py b/app/classes/web/panel_handler.py
+index e1d21f0..e3d41f9 100644
+--- a/app/classes/web/panel_handler.py
++++ b/app/classes/web/panel_handler.py
+@@ -935,31 +935,24 @@ class PanelHandler(BaseHandler):
+                 template = "panel/config_json.html"
+ 
+         elif page == "custom_login":
++            DEFAULT_PHOTO = "login_1.jpg"
+             if exec_user["superuser"]:
+                 page_data["backgrounds"] = []
+-                cached_split = self.controller.cached_login.split("/")
+ 
+-                if len(cached_split) == 1:
+-                    page_data["backgrounds"].append(self.controller.cached_login)
+-                else:
+-                    page_data["backgrounds"].append(cached_split[1])
+-                if "login_1.jpg" not in page_data["backgrounds"]:
+-                    page_data["backgrounds"].append("login_1.jpg")
+-                self.helper.ensure_dir_exists(
+-                    os.path.join(
+-                        self.controller.project_root,
+-                        "app/frontend/static/assets/images/auth/custom",
+-                    )
+-                )
+-                for item in os.listdir(
+-                    os.path.join(
+-                        self.controller.project_root,
+-                        "app/frontend/static/assets/images/auth/custom",
+-                    )
+-                ):
+-                    if item not in page_data["backgrounds"]:
+-                        page_data["backgrounds"].append(item)
+-                page_data["background"] = self.controller.cached_login
++                self.helper.ensure_dir_exists(self.helper.auth_img_dir)
++                for item in os.listdir(self.helper.auth_img_dir):
++                    page_data["backgrounds"].append(item)
++
++                cached = self.controller.cached_login
++                name = cached.removeprefix("custom/")
++
++                if name not in page_data["backgrounds"]:
++                    page_data["backgrounds"].append(name)
++
++                if DEFAULT_PHOTO not in page_data["backgrounds"]:
++                    page_data["backgrounds"].append(DEFAULT_PHOTO)
++
++                page_data["background"] = cached
+                 page_data[
+                     "login_opacity"
+                 ] = self.controller.management.get_login_opacity()
+diff --git a/app/classes/web/routes/api/crafty/config/index.py b/app/classes/web/routes/api/crafty/config/index.py
+index a2bff72..09b2550 100644
+--- a/app/classes/web/routes/api/crafty/config/index.py
++++ b/app/classes/web/routes/api/crafty/config/index.py
+@@ -196,15 +196,9 @@ class ApiCraftyCustomizeIndexHandler(BaseApiHandler):
+                     "error_data": str(e),
+                 },
+             )
+-        if not self.helper.validate_traversal(
+-            os.path.join(
+-                self.controller.project_root,
+-                "app/frontend/static/assets/images/auth/",
+-            ),
+-            os.path.join(
+-                self.controller.project_root,
+-                f"app/frontend/static/assets/images/auth/{data['photo']}",
+-            ),
++        if data['photo'] != DEFAULT_PHOTO and not self.helper.validate_traversal(
++            self.helper.auth_img_dir,
++            self.helper.auth_img_dir / data['photo']
+         ):
+             return self.finish_json(
+                 400,
+@@ -224,7 +218,7 @@ class ApiCraftyCustomizeIndexHandler(BaseApiHandler):
+         self.controller.management.set_login_opacity(int(data["opacity"]))
+         if data["photo"] == DEFAULT_PHOTO:
+             self.controller.management.set_login_image(DEFAULT_PHOTO)
+-            self.controller.cached_login = f"{data['photo']}"
++            self.controller.cached_login = data['photo']
+         else:
+             self.controller.management.set_login_image(f"custom/{data['photo']}")
+             self.controller.cached_login = f"custom/{data['photo']}"
+@@ -262,19 +256,8 @@ class ApiCraftyCustomizeIndexHandler(BaseApiHandler):
+                 },
+             )
+         if not self.helper.validate_traversal(
+-            os.path.join(
+-                self.controller.project_root,
+-                "app",
+-                "frontend",
+-                "/static/assets/images/auth/",
+-            ),
+-            os.path.join(
+-                self.controller.project_root,
+-                "app",
+-                "frontend",
+-                "/static/assets/images/auth/",
+-                data["photo"],
+-            ),
++            self.controller.auth_image_dir,
++            self.controller.auth_image_dir / data["photo"],
+         ):
+             return self.finish_json(
+                 400,
+@@ -295,10 +278,7 @@ class ApiCraftyCustomizeIndexHandler(BaseApiHandler):
+                 },
+             )
+         FileHelpers.del_file(
+-            os.path.join(
+-                self.controller.project_root,
+-                f"app/frontend/static/assets/images/auth/custom/{data['photo']}",
+-            )
++            self.controller.auth_image_dir / data['photo'],
+         )
+         current = self.controller.cached_login
+         split = current.split("/")
+diff --git a/app/classes/web/routes/api/crafty/imports/index.py b/app/classes/web/routes/api/crafty/imports/index.py
+index e6c8c54..cf9632e 100644
+--- a/app/classes/web/routes/api/crafty/imports/index.py
++++ b/app/classes/web/routes/api/crafty/imports/index.py
+@@ -65,7 +65,7 @@ class ApiImportFilesIndexHandler(BaseApiHandler):
+             # the path.
+             if data["upload"]:
+                 folder = os.path.join(
+-                    self.controller.project_root, "import", "upload", folder
++                    self.helper.import_upload_dir, folder
+                 )
+             if Helpers.check_file_exists(folder):
+                 folder = self.file_helper.unzip_server(folder, user_id)
+diff --git a/app/classes/web/tornado_handler.py b/app/classes/web/tornado_handler.py
+index 621c930..bdcec92 100644
+--- a/app/classes/web/tornado_handler.py
++++ b/app/classes/web/tornado_handler.py
+@@ -162,6 +162,8 @@ class Webserver:
+             (r"/ws", WebSocketHandler, handler_args),
+             (r"/upload", UploadHandler, handler_args),
+             (r"/status", StatusHandler, handler_args),
++            (r"/auth_img/custom/(.*)", tornado.web.StaticFileHandler, {"path": self.helper.auth_img_dir}),
++            (r"/auth_img/(.*)", tornado.web.StaticFileHandler, {"path": self.helper.default_auth_img_dir}),
+             # API Routes V1
+             (r"/api/v1/stats/servers", ServersStats, handler_args),
+             (r"/api/v1/stats/node", NodeStats, handler_args),
+diff --git a/app/classes/web/upload_handler.py b/app/classes/web/upload_handler.py
+index 0667dd1..fe9ca43 100644
+--- a/app/classes/web/upload_handler.py
++++ b/app/classes/web/upload_handler.py
+@@ -102,7 +102,7 @@ class UploadHandler(BaseHandler):
+                 )
+                 self.do_upload = False
+ 
+-            path = os.path.join(self.controller.project_root, "import", "upload")
++            path = self.helper.import_upload_dir
+             self.helper.ensure_dir_exists(path)
+             # Delete existing files
+             if len(os.listdir(path)) > 0:
+@@ -193,10 +193,7 @@ class UploadHandler(BaseHandler):
+                 Console.warning("User ID not found in upload handler call")
+                 self.do_upload = False
+ 
+-            path = os.path.join(
+-                self.controller.project_root,
+-                "app/frontend/static/assets/images/auth/custom",
+-            )
++            path = self.helper.auth_img_dir
+             filename = self.request.headers.get("X-FileName", None)
+             full_path = os.path.join(path, filename)
+ 
+diff --git a/app/frontend/templates/panel/custom_login.html b/app/frontend/templates/panel/custom_login.html
+index 4eb22ca..3e501da 100644
+--- a/app/frontend/templates/panel/custom_login.html
++++ b/app/frontend/templates/panel/custom_login.html
+@@ -109,7 +109,7 @@
+                             </div>
+                           </div>
+                           <div id="login_preview" style="position: relative;">
+-                            <img id="bg-preview" src="../../static/assets/images/auth/{{ data['background'] }}"
++                            <img id="bg-preview" src="/auth_img/{{ data['background'] }}"
+                               class="img-fluid" alt="Responsive image">
+                             <div id="login-form-preview">
+                               <div id="login-form-background" class="auto-form-wrapper login-modal">
+@@ -438,4 +438,4 @@
+   }
+ </script>
+ 
+-{% end %}
+\ No newline at end of file
++{% end %}
+diff --git a/app/frontend/templates/panel/denied.html b/app/frontend/templates/panel/denied.html
+index 7107db1..ede8679 100644
+--- a/app/frontend/templates/panel/denied.html
++++ b/app/frontend/templates/panel/denied.html
+@@ -29,7 +29,7 @@
+   </head>
+   <style>
+     .auth.auth-bg-1 {
+-      background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++      background: url("/auth_img/{{ data['background'] }}"),
+         url("/static/assets/images/auth/login_1.jpg");
+       background-size: cover;
+     }
+@@ -55,7 +55,7 @@
+                         </h5>
+                         <p class="mb-2 comment font-weight-light">
+                           {{ translate('accessDenied', 'contactAdmin',
+-                          data['lang']) }}<br /><br /> 
++                          data['lang']) }}<br /><br />
+                           <a class="d-inline font-weight-medium" href="https://discord.gg/9VJPhCE" > {{ translate('accessDenied', 'contact', data['lang']) }}</a>
+                         </p>
+                       </div>
+diff --git a/app/frontend/templates/public/404.html b/app/frontend/templates/public/404.html
+index 62a78a8..574ddf5 100644
+--- a/app/frontend/templates/public/404.html
++++ b/app/frontend/templates/public/404.html
+@@ -31,7 +31,7 @@
+ </head>
+ <style>
+   .auth.auth-bg-1 {
+-    background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++    background: url("/auth_img/{{ data['background'] }}"),
+     url("/static/assets/images/auth/login_1.jpg");
+     background-size: cover;
+   }
+@@ -86,4 +86,4 @@
+   <!-- endinject -->
+ </body>
+ 
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/app/frontend/templates/public/error.html b/app/frontend/templates/public/error.html
+index f51d1dc..a51ace6 100644
+--- a/app/frontend/templates/public/error.html
++++ b/app/frontend/templates/public/error.html
+@@ -31,7 +31,7 @@
+ </head>
+ <style>
+   .auth.auth-bg-1 {
+-    background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++    background: url("/auth_img/{{ data['background'] }}"),
+     url("/static/assets/images/auth/login_1.jpg");
+     background-size: cover;
+   }
+@@ -91,4 +91,4 @@
+   <!-- endinject -->
+ </body>
+ 
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/app/frontend/templates/public/login.html b/app/frontend/templates/public/login.html
+index f66b6c5..b032481 100644
+--- a/app/frontend/templates/public/login.html
++++ b/app/frontend/templates/public/login.html
+@@ -30,7 +30,7 @@
+ </head>
+ <style>
+   .auth.auth-bg-1 {
+-    background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++    background: url("/auth_img/{{ data['background'] }}"),
+     url("/static/assets/images/auth/login_1.jpg");
+     background-size: cover;
+     background-position: center;
+@@ -120,7 +120,7 @@
+                     <span class="text-small font-weight-semibold"><a href="https://craftycontrol.com/">Crafty Control
+                         {{data['version'] }}</a> </span>
+                   </div>
+-                  
++
+                   <div class="text-block text-center my-3">
+                     <a href="/status" class="text-small forgot-password">{{ translate('login', 'viewStatus',
+                       data['lang']) }}</a>
+@@ -164,4 +164,4 @@
+   </script>
+ </body>
+ 
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/app/frontend/templates/public/offline.html b/app/frontend/templates/public/offline.html
+index a90e65a..6af4d3c 100644
+--- a/app/frontend/templates/public/offline.html
++++ b/app/frontend/templates/public/offline.html
+@@ -31,7 +31,7 @@
+ </head>
+ <style>
+   .auth.auth-bg-1 {
+-    background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++    background: url("/auth_img/{{ data['background'] }}"),
+     url("/static/assets/images/auth/login_1.jpg");
+     background-size: cover;
+   }
+@@ -82,4 +82,4 @@
+   <!-- endinject -->
+ </body>
+ 
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/app/frontend/templates/public/status.html b/app/frontend/templates/public/status.html
+index 1190b9f..16d584e 100644
+--- a/app/frontend/templates/public/status.html
++++ b/app/frontend/templates/public/status.html
+@@ -9,7 +9,7 @@
+ <!-- View for Large screen -->
+ <style>
+   .auth.auth-bg-1 {
+-    background: url("../../static/assets/images/auth/{% raw data['background'] %}"),
++    background: url("/auth_img/{{ data['background'] }}"),
+     url("/static/assets/images/auth/login_1.jpg");
+     background-size: cover;
+   }
+@@ -272,4 +272,4 @@
+   }());
+ </script>
+ 
+-{% end %}
+\ No newline at end of file
++{% end %}
+diff --git a/main.py b/main.py
+index 7b45967..539f2de 100644
+--- a/main.py
++++ b/main.py
+@@ -75,7 +75,7 @@ def do_intro():
+ 
+ 
+ def setup_logging(debug=True):
+-    logging_config_file = os.path.join(os.path.dirname(__file__), "app", "config", "logging.json")
++    logging_config_file = helper.root_dir / "app/config/logging.json"
+ 
+     if os.path.exists(logging_config_file):
+         # open our logging config file
+@@ -112,6 +112,7 @@ def main():
+ 
+     args = parser.parse_args()
+ 
++    print(f'ensure_logging_setup, mutable_dir={helper.mutable_dir}, logs_dir={helper.logs_dir}')
+     helper.ensure_logging_setup()
+ 
+     setup_logging(debug=args.verbose)
+@@ -230,31 +231,15 @@ def main():
+         if not controller.check_system_user():
+             controller.add_system_user()
+ 
+-        if getattr(sys, "frozen", False):
+-            application_path = os.path.dirname(sys.executable)
+-            running_mode = "Frozen/executable"
+-        else:
+-            try:
+-                app_full_path = os.path.realpath(__file__)
+-                application_path = os.path.dirname(app_full_path)
+-                running_mode = "Non-interactive (e.g. 'python main.py')"
+-            except NameError:
+-                application_path = os.getcwd()
+-                running_mode = "Interactive"
+-
+-        controller.set_project_root(application_path)
+         master_server_dir = controller.management.get_master_server_dir()
+         if master_server_dir == "":
+             logger.debug("Could not find master server path. Setting default")
+             controller.set_master_server_dir(
+-                os.path.join(controller.project_root, "servers")
++                helper.default_master_server_dir
+             )
+         else:
+             helper.servers_dir = master_server_dir
+ 
+-        Console.debug(f"Execution Mode: {running_mode}")
+-        Console.debug(f"Application path  : '{application_path}'")
+-
+         controller.clear_support_status()
+ 
+     crafty_prompt = MainPrompt(
+@@ -299,10 +284,10 @@ def main():
+         crafty_prompt.prompt = f"Crafty Controller v{helper.get_version_string()} > "
+         try:
+             logger.info("Removing old temp dirs")
+-            FileHelpers.del_dirs(os.path.join(controller.project_root, "temp"))
++            FileHelpers.del_dirs(helper.temp_dir)
+         except:
+             logger.info("Did not find old temp dir.")
+-        os.mkdir(os.path.join(controller.project_root, "temp"))
++        os.mkdir(helper.temp_dir)
+ 
+         if not args.daemon:
+             # Put the prompt under the cursor
+-- 
+2.42.0
+

@@ -1,0 +1,26 @@
+From 0aa997de2c5caa1b1af01b51da590d9f4eaaa049 Mon Sep 17 00:00:00 2001
+From: Axel Karjalainen <axel@axka.fi>
+Date: Mon, 4 Dec 2023 09:25:00 +0200
+Subject: [PATCH] Use legacy SQLite drop_column migrator
+
+This fixes Peewee 3.16.1+
+---
+ app/classes/shared/migration.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/app/classes/shared/migration.py b/app/classes/shared/migration.py
+index c31542a..5134ae1 100644
+--- a/app/classes/shared/migration.py
++++ b/app/classes/shared/migration.py
+@@ -162,7 +162,7 @@ class Migrator(object):
+                 )
+             self.operations.append(
+                 self.migrator.drop_column(
+-                    model._meta.table_name, field.column_name, cascade=False
++                    model._meta.table_name, field.column_name, cascade=False, legacy=True
+                 )
+             )
+         return model
+-- 
+2.42.0
+

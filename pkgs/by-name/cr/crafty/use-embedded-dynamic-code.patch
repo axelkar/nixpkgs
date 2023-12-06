@@ -1,0 +1,29 @@
+From e92b474fcd927339e361e5209ee0746bc88b4858 Mon Sep 17 00:00:00 2001
+From: Axel Karjalainen <axel@axka.fi>
+Date: Mon, 4 Dec 2023 08:47:18 +0200
+Subject: [PATCH] Use embedded frontend and migration files
+
+---
+ app/classes/shared/helpers.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/app/classes/shared/helpers.py b/app/classes/shared/helpers.py
+index 3b26009..a8f5f0b 100644
+--- a/app/classes/shared/helpers.py
++++ b/app/classes/shared/helpers.py
+@@ -59,10 +59,10 @@ class Helpers:
+     def __init__(self):
+         self.root_dir = os.path.abspath(os.path.curdir)
+         self.config_dir = os.path.join(self.root_dir, "app", "config")
+-        self.webroot = os.path.join(self.root_dir, "app", "frontend")
++        self.webroot = pathlib.Path(__file__).parent.parent.parent / "frontend"
+         self.servers_dir = os.path.join(self.root_dir, "servers")
+         self.backup_path = os.path.join(self.root_dir, "backups")
+-        self.migration_dir = os.path.join(self.root_dir, "app", "migrations")
++        self.migration_dir = pathlib.Path(__file__).parent.parent.parent / "migrations"
+         self.dir_migration = False
+ 
+         self.session_file = os.path.join(self.root_dir, "app", "config", "session.lock")
+-- 
+2.42.0
+

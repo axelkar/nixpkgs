@@ -1,0 +1,139 @@
+From 1e40695a14a16397c3ef07bbd52676e455613270 Mon Sep 17 00:00:00 2001
+From: Axel Karjalainen <axel@axka.fi>
+Date: Mon, 4 Dec 2023 08:45:54 +0200
+Subject: [PATCH] Use embedded data and cache files
+
+---
+ app/classes/minecraft/mc_ping.py    |  2 +-
+ app/classes/minecraft/serverjars.py | 30 +++++++++++++++++++----------
+ app/classes/shared/helpers.py       |  7 ++++---
+ main.py                             |  2 +-
+ 4 files changed, 26 insertions(+), 15 deletions(-)
+
+diff --git a/app/classes/minecraft/mc_ping.py b/app/classes/minecraft/mc_ping.py
+index c5cb991..9d67a94 100644
+--- a/app/classes/minecraft/mc_ping.py
++++ b/app/classes/minecraft/mc_ping.py
+@@ -100,7 +100,7 @@ class Player:
+ 
+ def get_code_format(format_name):
+     root_dir = os.path.abspath(os.path.curdir)
+-    format_file = os.path.join(root_dir, "app", "config", "motd_format.json")
++    format_file = os.path.join(os.path.dirname(__file__), "..", "..", "config", "motd_format.json")
+     try:
+         with open(format_file, "r", encoding="utf-8") as f:
+             data = json.load(f)
+diff --git a/app/classes/minecraft/serverjars.py b/app/classes/minecraft/serverjars.py
+index 447cf80..4498a84 100644
+--- a/app/classes/minecraft/serverjars.py
++++ b/app/classes/minecraft/serverjars.py
+@@ -5,6 +5,7 @@ import shutil
+ import logging
+ from datetime import datetime
+ import requests
++import os.path
+ 
+ from app.classes.controllers.servers_controller import ServersController
+ from app.classes.models.server_permissions import PermissionsServers
+@@ -39,16 +40,25 @@ class ServerJars:
+         return api_response
+ 
+     def _read_cache(self):
+-        cache_file = self.helper.serverjar_cache
+-        cache = {}
++        embedded_cache_file = self.helper.embedded_serverjar_cache
++        writable_cache_file = self.helper.writable_serverjar_cache
++
++        if os.path.isfile(writable_cache_file):
++            try:
++                with open(writable_cache_file, "r", encoding="utf-8") as f:
++                    return json.load(f)
++            except Exception as e:
++                logger.error(f"Unable to read writable serverjars.com cache file, removing it and using embedded: {e}")
++                os.remove(writable_cache_file)
++
+         try:
+-            with open(cache_file, "r", encoding="utf-8") as f:
+-                cache = json.load(f)
++            with open(embedded_cache_file, "r", encoding="utf-8") as f:
++                return json.load(f)
+ 
+         except Exception as e:
+-            logger.error(f"Unable to read serverjars.com cache file: {e}")
++            logger.critical(f"Unable to read embedded serverjars.com cache file: {e}")
+ 
+-        return cache
++        return {}
+ 
+     def get_serverjar_data(self):
+         data = self._read_cache()
+@@ -72,7 +82,7 @@ class ServerJars:
+         return False
+ 
+     def manual_refresh_cache(self):
+-        cache_file = self.helper.serverjar_cache
++        writable_cache_file = self.helper.writable_serverjar_cache
+ 
+         # debug override
+         # cache_old = True
+@@ -97,7 +107,7 @@ class ServerJars:
+                 data["types"][s].update({j: versions})
+         # save our cache
+         try:
+-            with open(cache_file, "w", encoding="utf-8") as f:
++            with open(writable_cache_file, "w", encoding="utf-8") as f:
+                 f.write(json.dumps(data, indent=4))
+                 logger.info("Cache file refreshed")
+ 
+@@ -105,8 +115,8 @@ class ServerJars:
+             logger.error(f"Unable to update serverjars.com cache file: {e}")
+ 
+     def refresh_cache(self):
+-        cache_file = self.helper.serverjar_cache
+-        cache_old = self.helper.is_file_older_than_x_days(cache_file)
++        cache_file = self.helper.writable_serverjar_cache
++        cache_old = not os.path.isfile(cache_file) or self.helper.is_file_older_than_x_days(cache_file)
+ 
+         # debug override
+         # cache_old = True
+diff --git a/app/classes/shared/helpers.py b/app/classes/shared/helpers.py
+index 62ce881..3b26009 100644
+--- a/app/classes/shared/helpers.py
++++ b/app/classes/shared/helpers.py
+@@ -72,8 +72,9 @@ class Helpers:
+         self.db_path = os.path.join(
+             self.root_dir, "app", "config", "db", "crafty.sqlite"
+         )
+-        self.serverjar_cache = os.path.join(self.config_dir, "serverjars.json")
+-        self.credits_cache = os.path.join(self.config_dir, "credits.json")
++        self.writable_serverjar_cache = os.path.join(self.config_dir, "serverjars.json")
++        self.embedded_serverjar_cache = pathlib.Path(__file__).parent.parent.parent / "config" / "serverjars.json"
++        self.credits_cache = pathlib.Path(__file__).parent.parent.parent / "config" / "credits.json"
+         self.passhasher = PasswordHasher()
+         self.exiting = False
+ 
+@@ -568,7 +569,7 @@ class Helpers:
+         version_data = {}
+         try:
+             with open(
+-                os.path.join(self.config_dir, "version.json"), "r", encoding="utf-8"
++                pathlib.Path(__file__).parent.parent.parent / "config" / "version.json", "r", encoding="utf-8"
+             ) as f:
+                 version_data = json.load(f)
+ 
+diff --git a/main.py b/main.py
+index 4682da3..7b45967 100644
+--- a/main.py
++++ b/main.py
+@@ -75,7 +75,7 @@ def do_intro():
+ 
+ 
+ def setup_logging(debug=True):
+-    logging_config_file = os.path.join(os.path.curdir, "app", "config", "logging.json")
++    logging_config_file = os.path.join(os.path.dirname(__file__), "app", "config", "logging.json")
+ 
+     if os.path.exists(logging_config_file):
+         # open our logging config file
+-- 
+2.42.0
+
